@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "skills": {
+    "nodejs-scaffolding": {
+      "source": "TechWithEmmaYT/TechwithEmma-Skills",
+      "sourceType": "github",
+      "skillPath": "skills/nodejs-scaffolding/SKILL.md",
+      "computedHash": "0eabe9fc60af6546b1dd94d3a2c6147f3b3510760f0eeb9a4f0ec7751a8c7c36"
+    }
+  }
+}
