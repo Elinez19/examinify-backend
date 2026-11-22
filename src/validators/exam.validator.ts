@@ -119,6 +119,41 @@ export const approveExamSchema = z.object({
   accessPin: z.string().trim().min(4).max(16).optional(),
 });
 
+export const updateExamSchema = z.object({
+  title: z.string().trim().min(3).max(200).optional(),
+  instructions: z.array(z.string().trim().min(1)).optional(),
+  durationMinutes: z.number().int().min(5).max(360).optional(),
+  passingScore: z.number().min(0).max(100).optional(),
+  scheduledAt: z.coerce.date().nullable().optional(),
+  endsAt: z.coerce.date().nullable().optional(),
+  accessPin: z.string().trim().min(4).max(16).nullable().optional(),
+  status: z.enum(["draft", "completed"]).optional(),
+  allowCalculator: z.boolean().optional(),
+  shuffleQuestions: z.boolean().optional(),
+  shuffleOptions: z.boolean().optional(),
+  allowBackwardNavigation: z.boolean().optional(),
+  strictProctoring: z.boolean().optional(),
+  maxInfractions: z.number().int().min(1).max(20).optional(),
+  maxTabSwitches: z.number().int().min(1).max(20).optional(),
+  autoPublishResults: z.boolean().optional(),
+  showStudentFeedback: z.boolean().optional(),
+  showCorrectAnswers: z.boolean().optional(),
+  enableLiveMonitoring: z.boolean().optional(),
+});
+
+export const releaseExamResultsSchema = z.object({
+  attemptIds: z.array(z.string().uuid()).optional(),
+  includeFlagged: z.boolean().optional().default(false),
+  markExamPublished: z.boolean().optional().default(true),
+});
+
+export const publishGradebookSchema = z.object({
+  termId: z.string().uuid(),
+  classId: z.string().uuid(),
+  subjectId: z.string().uuid().optional(),
+  isPublished: z.boolean().optional().default(true),
+});
+
 export const gradeTheoryAnswerSchema = z.object({
   awardedPoints: z.number().min(0).max(100).optional(),
   rubricBreakdown: z
@@ -151,5 +186,8 @@ export type CreateQuestionBankInput = z.infer<typeof createQuestionBankSchema>;
 export type AiGenerateQuestionsInput = z.infer<typeof aiGenerateQuestionsSchema>;
 export type CreateExamInput = z.infer<typeof createExamSchema>;
 export type ApproveExamInput = z.infer<typeof approveExamSchema>;
+export type UpdateExamInput = z.infer<typeof updateExamSchema>;
+export type ReleaseExamResultsInput = z.infer<typeof releaseExamResultsSchema>;
 export type GradeTheoryAnswerInput = z.infer<typeof gradeTheoryAnswerSchema>;
 export type UpsertGradebookInput = z.infer<typeof upsertGradebookSchema>;
+export type PublishGradebookInput = z.infer<typeof publishGradebookSchema>;

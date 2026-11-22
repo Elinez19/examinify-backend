@@ -120,7 +120,7 @@ const seedDemo = async () => {
     role: "school_admin",
     branchId: guzape.id,
     schoolId: guzapeSecondary.id,
-    twoFactorEnabled: true,
+    twoFactorEnabled: false,
   });
 
   const examinerUser = await ensureAccount({

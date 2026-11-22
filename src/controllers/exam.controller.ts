@@ -11,6 +11,9 @@ import {
   createExamSchema,
   createQuestionBankSchema,
   gradeTheoryAnswerSchema,
+  publishGradebookSchema,
+  releaseExamResultsSchema,
+  updateExamSchema,
   upsertGradebookSchema,
 } from "../validators/exam.validator";
 
@@ -96,6 +99,37 @@ export const examController = {
     res.status(HttpStatus.OK).json({ success: true, data });
   },
 
+  async updateExam(req: Request, res: Response) {
+    const payload = updateExamSchema.parse(req.body);
+    const data = await examService.update(
+      req.auth!.user,
+      String(req.params.examId),
+      payload,
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async deleteExam(req: Request, res: Response) {
+    const data = await examService.softDelete(
+      req.auth!.user,
+      String(req.params.examId),
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async releaseExamResults(req: Request, res: Response) {
+    const payload = releaseExamResultsSchema.parse(req.body ?? {});
+    const data = await examService.releaseResults(
+      req.auth!.user,
+      String(req.params.examId),
+      payload,
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
   // Theory Grading & Gradebook
   async gradeTheoryAnswer(req: Request, res: Response) {
     const payload = gradeTheoryAnswerSchema.parse(req.body);
@@ -140,5 +174,11 @@ export const examController = {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="gradebook-${classId}.csv"`);
     res.status(HttpStatus.OK).send(csv);
+  },
+
+  async publishGradebook(req: Request, res: Response) {
+    const payload = publishGradebookSchema.parse(req.body);
+    const data = await gradebookService.publishRecords(req.auth!.user, payload, req);
+    res.status(HttpStatus.OK).json({ success: true, data });
   },
 };

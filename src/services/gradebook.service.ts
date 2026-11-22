@@ -21,6 +21,7 @@ import { auditService } from "./audit.service";
 import { scopeService } from "./scope.service";
 import {
   GradeTheoryAnswerInput,
+  PublishGradebookInput,
   UpsertGradebookInput,
 } from "../validators/exam.validator";
 
@@ -287,5 +288,57 @@ export const gradebookService = {
         atRisk: r.record.isAtRisk ? "YES" : "NO",
       }))
     );
+  },
+
+  async publishRecords(
+    actor: AuthenticatedUser,
+    input: PublishGradebookInput,
+    req?: Request
+  ) {
+    await scopeService.assertTeacherClassSubjectAccess(
+      actor,
+      input.classId,
+      input.subjectId
+    );
+
+    const conditions = [
+      eq(gradebookRecords.classId, input.classId),
+      eq(gradebookRecords.termId, input.termId),
+    ];
+    if (input.subjectId) {
+      conditions.push(eq(gradebookRecords.subjectId, input.subjectId));
+    }
+
+    const updated = await db
+      .update(gradebookRecords)
+      .set({
+        isPublished: input.isPublished,
+        updatedBy: actor.id,
+        updatedAt: new Date(),
+      })
+      .where(and(...conditions))
+      .returning({ id: gradebookRecords.id });
+
+    await auditService.log({
+      action: input.isPublished ? "gradebook.publish" : "gradebook.unpublish",
+      entityType: "gradebook_record",
+      entityId: input.classId,
+      metadata: {
+        termId: input.termId,
+        classId: input.classId,
+        subjectId: input.subjectId ?? null,
+        isPublished: input.isPublished,
+        updatedCount: updated.length,
+      },
+      req,
+    });
+
+    return {
+      updatedCount: updated.length,
+      isPublished: input.isPublished,
+      termId: input.termId,
+      classId: input.classId,
+      subjectId: input.subjectId ?? null,
+    };
   },
 };

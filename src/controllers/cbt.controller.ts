@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { HttpStatus } from "../config/http-status.config";
+import { AttemptStatus, attemptStatusEnum } from "../db/schema/enums";
 import { cbtService } from "../services/cbt.service";
 import {
   forceSubmitSchema,
@@ -50,6 +51,29 @@ export const cbtController = {
 
   async listMyResults(req: Request, res: Response) {
     const data = await cbtService.listMyResults(req.auth!.user.id);
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async listExamAttempts(req: Request, res: Response) {
+    const rawStatus =
+      typeof req.query.status === "string" ? req.query.status : undefined;
+    const status =
+      rawStatus && (attemptStatusEnum.enumValues as readonly string[]).includes(rawStatus)
+        ? (rawStatus as AttemptStatus)
+        : undefined;
+    const data = await cbtService.listExamAttempts(
+      req.auth!.user,
+      String(req.params.examId),
+      { status }
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async getAttemptDetail(req: Request, res: Response) {
+    const data = await cbtService.getAttemptDetailForStaff(
+      req.auth!.user,
+      String(req.params.attemptId)
+    );
     res.status(HttpStatus.OK).json({ success: true, data });
   },
 

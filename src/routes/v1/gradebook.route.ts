@@ -29,3 +29,9 @@ gradebookRoutes.get(
   requirePermission(PERMISSIONS.GRADEBOOK_EXPORT),
   asyncHandler(examController.exportGradebookCsv)
 );
+
+gradebookRoutes.post(
+  "/publish",
+  requirePermission(PERMISSIONS.GRADEBOOK_PUBLISH),
+  asyncHandler(examController.publishGradebook)
+);

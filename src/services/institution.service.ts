@@ -8,12 +8,16 @@ import {
   branches,
   classes,
   schools,
+  staffProfiles,
+  studentEnrollments,
+  studentProfiles,
   subjects,
   teacherAssignments,
   terms,
+  user,
 } from "../db/schema";
 import { AuthenticatedUser } from "../types/express";
-import { BadRequestException } from "../utils/app-error";
+import { BadRequestException, ForbiddenException, NotFoundException } from "../utils/app-error";
 import { auditService } from "./audit.service";
 import { scopeService } from "./scope.service";
 
@@ -287,6 +291,125 @@ export const institutionService = {
     });
 
     return created;
+  },
+
+  async listClassStudents(
+    actor: AuthenticatedUser,
+    classId: string,
+    sessionId?: string
+  ) {
+    const [cls] = await db
+      .select()
+      .from(classes)
+      .where(and(eq(classes.id, classId), isNull(classes.deletedAt)))
+      .limit(1);
+
+    if (!cls) {
+      throw new NotFoundException("Class not found.");
+    }
+
+    if (actor.role === "student") {
+      const { classIds } = await scopeService.getStudentActiveClassIds(actor.id);
+      if (!classIds.includes(classId)) {
+        throw new ForbiddenException("Access denied: you are not enrolled in this class.");
+      }
+    } else if (actor.role === "teacher") {
+      await scopeService.assertTeacherClassSubjectAccess(actor, classId);
+    } else if (actor.role !== "super_admin") {
+      await scopeService.assertSchoolAccess(actor, cls.schoolId);
+    }
+
+    const conditions = [
+      eq(studentEnrollments.classId, classId),
+      eq(studentEnrollments.isActive, true),
+      isNull(studentProfiles.deletedAt),
+      isNull(user.deletedAt),
+    ];
+
+    if (sessionId) {
+      conditions.push(eq(studentEnrollments.sessionId, sessionId));
+    }
+
+    return db
+      .select({
+        enrollmentId: studentEnrollments.id,
+        sessionId: studentEnrollments.sessionId,
+        studentProfileId: studentProfiles.id,
+        userId: user.id,
+        name: user.name,
+        username: user.username,
+        email: user.email,
+        image: user.image,
+        status: user.status,
+        registrationNumber: studentProfiles.registrationNumber,
+        gender: studentProfiles.gender,
+        gradeLevel: studentProfiles.gradeLevel,
+        department: studentProfiles.department,
+      })
+      .from(studentEnrollments)
+      .innerJoin(
+        studentProfiles,
+        eq(studentEnrollments.studentProfileId, studentProfiles.id)
+      )
+      .innerJoin(user, eq(studentProfiles.userId, user.id))
+      .where(and(...conditions))
+      .orderBy(user.name);
+  },
+
+  async listTeacherAssignments(
+    actor: AuthenticatedUser,
+    filters: { classId?: string; staffProfileId?: string; sessionId?: string }
+  ) {
+    const conditions = [];
+
+    if (actor.role === "teacher") {
+      const [staff] = await db
+        .select({ id: staffProfiles.id })
+        .from(staffProfiles)
+        .where(and(eq(staffProfiles.userId, actor.id), isNull(staffProfiles.deletedAt)))
+        .limit(1);
+      if (!staff) return [];
+      conditions.push(eq(teacherAssignments.staffProfileId, staff.id));
+    } else if (actor.role !== "super_admin") {
+      if (actor.primaryBranchId) {
+        conditions.push(eq(teacherAssignments.branchId, actor.primaryBranchId));
+      }
+      if (actor.primarySchoolId) {
+        conditions.push(eq(teacherAssignments.schoolId, actor.primarySchoolId));
+      }
+    }
+
+    if (filters.classId) conditions.push(eq(teacherAssignments.classId, filters.classId));
+    if (filters.staffProfileId && actor.role !== "teacher") {
+      conditions.push(eq(teacherAssignments.staffProfileId, filters.staffProfileId));
+    }
+    if (filters.sessionId) conditions.push(eq(teacherAssignments.sessionId, filters.sessionId));
+
+    return db
+      .select({
+        id: teacherAssignments.id,
+        staffProfileId: teacherAssignments.staffProfileId,
+        branchId: teacherAssignments.branchId,
+        schoolId: teacherAssignments.schoolId,
+        classId: teacherAssignments.classId,
+        subjectId: teacherAssignments.subjectId,
+        sessionId: teacherAssignments.sessionId,
+        isAllClassSubjects: teacherAssignments.isAllClassSubjects,
+        staffId: staffProfiles.staffId,
+        teacherName: user.name,
+        teacherEmail: user.email,
+        className: classes.name,
+        classCode: classes.code,
+        subjectName: subjects.name,
+        subjectCode: subjects.code,
+      })
+      .from(teacherAssignments)
+      .innerJoin(staffProfiles, eq(teacherAssignments.staffProfileId, staffProfiles.id))
+      .innerJoin(user, eq(staffProfiles.userId, user.id))
+      .innerJoin(classes, eq(teacherAssignments.classId, classes.id))
+      .leftJoin(subjects, eq(teacherAssignments.subjectId, subjects.id))
+      .where(conditions.length ? and(...conditions) : undefined)
+      .orderBy(classes.name);
   },
 
   async recordAttendance(

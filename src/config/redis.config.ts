@@ -2,7 +2,9 @@ import { Redis } from "@upstash/redis";
 import { Env } from "./env.config";
 import { logger } from "../utils/logger";
 
-const hasUpstash = Boolean(Env.UPSTASH_REDIS_REST_URL && Env.UPSTASH_REDIS_REST_TOKEN);
+const hasUpstash =
+  Env.NODE_ENV !== "test" &&
+  Boolean(Env.UPSTASH_REDIS_REST_URL && Env.UPSTASH_REDIS_REST_TOKEN);
 
 export const redisClient: Redis | null = hasUpstash
   ? new Redis({

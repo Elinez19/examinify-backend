@@ -63,6 +63,11 @@ institutionRoutes.post(
   asyncHandler(institutionController.createClass)
 );
 institutionRoutes.get(
+  "/classes/:classId/students",
+  requirePermission(PERMISSIONS.CLASS_READ),
+  asyncHandler(institutionController.listClassStudents)
+);
+institutionRoutes.get(
   "/subjects",
   requirePermission(PERMISSIONS.SUBJECT_READ),
   asyncHandler(institutionController.listSubjects)
@@ -71,6 +76,11 @@ institutionRoutes.post(
   "/subjects",
   requirePermission(PERMISSIONS.SUBJECT_MANAGE),
   asyncHandler(institutionController.createSubject)
+);
+institutionRoutes.get(
+  "/teacher-assignments",
+  requirePermission(PERMISSIONS.CLASS_READ),
+  asyncHandler(institutionController.listTeacherAssignments)
 );
 institutionRoutes.post(
   "/teacher-assignments",

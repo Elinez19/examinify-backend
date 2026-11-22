@@ -20,6 +20,13 @@ attemptsRoutes.get(
   asyncHandler(cbtController.listMyResults)
 );
 
+// Staff attempt script review & rubric grading detail
+attemptsRoutes.get(
+  "/:attemptId",
+  requirePermission(PERMISSIONS.EXAM_MONITOR),
+  asyncHandler(cbtController.getAttemptDetail)
+);
+
 attemptsRoutes.put(
   "/:attemptId/answers",
   requirePermission(PERMISSIONS.EXAM_TAKE),

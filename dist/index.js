@@ -121,9 +121,62 @@ var import_plugins = require("better-auth/plugins");
 var import_access = require("better-auth/plugins/admin/access");
 
 // src/db/index.ts
-var import_serverless = require("@neondatabase/serverless");
-var import_neon_serverless = require("drizzle-orm/neon-serverless");
-var import_ws = __toESM(require("ws"));
+var import_dns = __toESM(require("dns"));
+var import_net = __toESM(require("net"));
+var import_pg = require("pg");
+var import_node_postgres = require("drizzle-orm/node-postgres");
+
+// src/utils/logger.ts
+var import_winston = __toESM(require("winston"));
+var { colorize, combine, errors, json, printf, timestamp } = import_winston.default.format;
+var SENSITIVE_KEY_PATTERN = /pass(word)?|secret|token|cookie|authorization|accesspin|pinhash|otp|backupcode|apikey|api_key|phone|guardian/i;
+var redactSensitiveValue = (value, depth = 0) => {
+  if (depth > 8 || value === null || value === void 0) {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    return value.map((item) => redactSensitiveValue(item, depth + 1));
+  }
+  if (typeof value === "object") {
+    const out = {};
+    for (const [k, v] of Object.entries(value)) {
+      if (SENSITIVE_KEY_PATTERN.test(k)) {
+        out[k] = "[REDACTED]";
+      } else {
+        out[k] = redactSensitiveValue(v, depth + 1);
+      }
+    }
+    return out;
+  }
+  return value;
+};
+var redactFormat = import_winston.default.format((info) => {
+  for (const key of Object.keys(info)) {
+    if (key === "level" || key === "message" || key === "timestamp") continue;
+    if (SENSITIVE_KEY_PATTERN.test(key)) {
+      info[key] = "[REDACTED]";
+    } else {
+      info[key] = redactSensitiveValue(info[key]);
+    }
+  }
+  return info;
+});
+var developmentFormat = combine(
+  redactFormat(),
+  colorize({ all: true }),
+  timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+  errors({ stack: true }),
+  printf(({ level, message, stack, timestamp: loggedAt, ...meta }) => {
+    const metadata = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
+    return `${loggedAt} [${level}]: ${String(message)}${stack ? ` ${stack}` : ""}${metadata}`;
+  })
+);
+var logger = import_winston.default.createLogger({
+  level: Env.LOG_LEVEL,
+  format: Env.NODE_ENV === "production" ? combine(redactFormat(), timestamp(), errors({ stack: true }), json()) : developmentFormat,
+  transports: [new import_winston.default.transports.Console()],
+  silent: Env.NODE_ENV === "test"
+});
 
 // src/db/schema.ts
 var schema_exports = {};
@@ -1085,66 +1138,35 @@ var questionBankItemsRelations = (0, import_drizzle_orm.relations)(questionBankI
 }));
 
 // src/db/index.ts
-import_serverless.neonConfig.webSocketConstructor = import_ws.default;
-var pool = new import_serverless.Pool({ connectionString: Env.DATABASE_URL });
-var db = (0, import_neon_serverless.drizzle)(pool, { schema: schema_exports });
+import_dns.default.setDefaultResultOrder("ipv4first");
+import_net.default.setDefaultAutoSelectFamily(false);
+var normalizeDatabaseUrl = (rawUrl) => {
+  try {
+    const parsed2 = new URL(rawUrl);
+    const sslMode = parsed2.searchParams.get("sslmode");
+    if (sslMode === "require" || sslMode === "prefer" || sslMode === "verify-ca") {
+      parsed2.searchParams.set("sslmode", "verify-full");
+    }
+    return parsed2.toString();
+  } catch {
+    return rawUrl;
+  }
+};
+var pool = new import_pg.Pool({
+  connectionString: normalizeDatabaseUrl(Env.DATABASE_URL),
+  max: 10,
+  idleTimeoutMillis: 3e4,
+  connectionTimeoutMillis: 3e4,
+  keepAlive: true,
+  keepAliveInitialDelayMillis: 1e4
+});
+pool.on("error", (err) => {
+  logger.error("Unexpected idle Postgres client error", { error: err.message });
+});
+var db = (0, import_node_postgres.drizzle)(pool, { schema: schema_exports });
 
 // src/config/resend.config.ts
 var import_resend = require("resend");
-
-// src/utils/logger.ts
-var import_winston = __toESM(require("winston"));
-var { colorize, combine, errors, json, printf, timestamp: timestamp7 } = import_winston.default.format;
-var SENSITIVE_KEY_PATTERN = /pass(word)?|secret|token|cookie|authorization|accesspin|pinhash|otp|backupcode|apikey|api_key|phone|guardian/i;
-var redactSensitiveValue = (value, depth = 0) => {
-  if (depth > 8 || value === null || value === void 0) {
-    return value;
-  }
-  if (Array.isArray(value)) {
-    return value.map((item) => redactSensitiveValue(item, depth + 1));
-  }
-  if (typeof value === "object") {
-    const out = {};
-    for (const [k, v] of Object.entries(value)) {
-      if (SENSITIVE_KEY_PATTERN.test(k)) {
-        out[k] = "[REDACTED]";
-      } else {
-        out[k] = redactSensitiveValue(v, depth + 1);
-      }
-    }
-    return out;
-  }
-  return value;
-};
-var redactFormat = import_winston.default.format((info) => {
-  for (const key of Object.keys(info)) {
-    if (key === "level" || key === "message" || key === "timestamp") continue;
-    if (SENSITIVE_KEY_PATTERN.test(key)) {
-      info[key] = "[REDACTED]";
-    } else {
-      info[key] = redactSensitiveValue(info[key]);
-    }
-  }
-  return info;
-});
-var developmentFormat = combine(
-  redactFormat(),
-  colorize({ all: true }),
-  timestamp7({ format: "YYYY-MM-DD HH:mm:ss" }),
-  errors({ stack: true }),
-  printf(({ level, message, stack, timestamp: loggedAt, ...meta }) => {
-    const metadata = Object.keys(meta).length ? ` ${JSON.stringify(meta)}` : "";
-    return `${loggedAt} [${level}]: ${String(message)}${stack ? ` ${stack}` : ""}${metadata}`;
-  })
-);
-var logger = import_winston.default.createLogger({
-  level: Env.LOG_LEVEL,
-  format: Env.NODE_ENV === "production" ? combine(redactFormat(), timestamp7(), errors({ stack: true }), json()) : developmentFormat,
-  transports: [new import_winston.default.transports.Console()],
-  silent: Env.NODE_ENV === "test"
-});
-
-// src/config/resend.config.ts
 var resendClient = Env.RESEND_API_KEY ? new import_resend.Resend(Env.RESEND_API_KEY) : null;
 if (!resendClient && Env.NODE_ENV !== "test") {
   logger.warn("Resend API key is not configured; emails will be logged in development.");
@@ -1465,7 +1487,7 @@ var import_ratelimit = require("@upstash/ratelimit");
 
 // src/config/redis.config.ts
 var import_redis = require("@upstash/redis");
-var hasUpstash = Boolean(Env.UPSTASH_REDIS_REST_URL && Env.UPSTASH_REDIS_REST_TOKEN);
+var hasUpstash = Env.NODE_ENV !== "test" && Boolean(Env.UPSTASH_REDIS_REST_URL && Env.UPSTASH_REDIS_REST_TOKEN);
 var redisClient = hasUpstash ? new import_redis.Redis({
   url: Env.UPSTASH_REDIS_REST_URL,
   token: Env.UPSTASH_REDIS_REST_TOKEN
@@ -2048,7 +2070,7 @@ var scopeService = {
 };
 
 // src/realtime/ws.server.ts
-var import_ws2 = require("ws");
+var import_ws = require("ws");
 var import_node = require("better-auth/node");
 var RealtimeGateway = class {
   wss = null;
@@ -2056,7 +2078,7 @@ var RealtimeGateway = class {
   examRooms = /* @__PURE__ */ new Map();
   clockTimer = null;
   init(server2) {
-    this.wss = new import_ws2.WebSocketServer({ noServer: true });
+    this.wss = new import_ws.WebSocketServer({ noServer: true });
     server2.on("upgrade", async (req, socket, head) => {
       try {
         const url = new URL(req.url || "/", `http://${req.headers.host || "localhost"}`);
@@ -2073,14 +2095,14 @@ var RealtimeGateway = class {
           return;
         }
         const examId = url.searchParams.get("examId");
-        this.wss.handleUpgrade(req, socket, head, (ws2) => {
+        this.wss.handleUpgrade(req, socket, head, (ws) => {
           const meta = {
             userId: sessionData.user.id,
             role: String(sessionData.user.role ?? "student"),
             examId
           };
-          this.registerClient(ws2, meta);
-          this.wss.emit("connection", ws2, req);
+          this.registerClient(ws, meta);
+          this.wss.emit("connection", ws, req);
         });
       } catch (error) {
         logger.error("WebSocket upgrade failed", { error: error.message });
@@ -2093,37 +2115,37 @@ var RealtimeGateway = class {
         type: "timer:sync",
         serverTime: (/* @__PURE__ */ new Date()).toISOString()
       });
-      for (const ws2 of this.clients.keys()) {
-        if (ws2.readyState === import_ws2.WebSocket.OPEN) {
-          ws2.send(payload);
+      for (const ws of this.clients.keys()) {
+        if (ws.readyState === import_ws.WebSocket.OPEN) {
+          ws.send(payload);
         }
       }
     }, 3e4);
     this.clockTimer.unref();
   }
-  registerClient(ws2, meta) {
-    this.clients.set(ws2, meta);
+  registerClient(ws, meta) {
+    this.clients.set(ws, meta);
     if (meta.examId) {
       let room = this.examRooms.get(meta.examId);
       if (!room) {
         room = /* @__PURE__ */ new Set();
         this.examRooms.set(meta.examId, room);
       }
-      room.add(ws2);
+      room.add(ws);
     }
-    ws2.send(
+    ws.send(
       JSON.stringify({
         type: "connected",
         serverTime: (/* @__PURE__ */ new Date()).toISOString(),
         examId: meta.examId
       })
     );
-    ws2.on("close", () => {
-      this.clients.delete(ws2);
+    ws.on("close", () => {
+      this.clients.delete(ws);
       if (meta.examId) {
         const room = this.examRooms.get(meta.examId);
         if (room) {
-          room.delete(ws2);
+          room.delete(ws);
           if (room.size === 0) {
             this.examRooms.delete(meta.examId);
           }
@@ -2135,11 +2157,11 @@ var RealtimeGateway = class {
     const room = this.examRooms.get(examId);
     if (!room) return;
     const payload = JSON.stringify({ ...event, serverTime: (/* @__PURE__ */ new Date()).toISOString() });
-    for (const ws2 of room) {
-      const meta = this.clients.get(ws2);
+    for (const ws of room) {
+      const meta = this.clients.get(ws);
       if (!meta || meta.role === "student") continue;
-      if (ws2.readyState === import_ws2.WebSocket.OPEN) {
-        ws2.send(payload);
+      if (ws.readyState === import_ws.WebSocket.OPEN) {
+        ws.send(payload);
       }
     }
   }
@@ -2147,10 +2169,10 @@ var RealtimeGateway = class {
     const room = this.examRooms.get(examId);
     if (!room) return;
     const payload = JSON.stringify({ ...event, serverTime: (/* @__PURE__ */ new Date()).toISOString() });
-    for (const ws2 of room) {
-      const meta = this.clients.get(ws2);
-      if (meta?.userId === userId && ws2.readyState === import_ws2.WebSocket.OPEN) {
-        ws2.send(payload);
+    for (const ws of room) {
+      const meta = this.clients.get(ws);
+      if (meta?.userId === userId && ws.readyState === import_ws.WebSocket.OPEN) {
+        ws.send(payload);
       }
     }
   }
@@ -2160,8 +2182,8 @@ var RealtimeGateway = class {
       this.clockTimer = null;
     }
     if (!this.wss) return;
-    for (const ws2 of this.clients.keys()) {
-      ws2.close(1001, "Server shutting down");
+    for (const ws of this.clients.keys()) {
+      ws.close(1001, "Server shutting down");
     }
     this.clients.clear();
     this.examRooms.clear();
@@ -5363,18 +5385,33 @@ var createApp = () => {
 
 // src/jobs/expiry-sweeper.job.ts
 var sweeperInterval = null;
+var isTickRunning = false;
 var startExpirySweeperJob = (intervalMs = 6e4) => {
   if (sweeperInterval) return;
   sweeperInterval = setInterval(async () => {
+    if (isTickRunning) return;
+    isTickRunning = true;
     try {
       const closedCount = await cbtService.sweepExpiredAttempts();
       if (closedCount > 0) {
         logger.info("Auto-submitted expired CBT exam attempts", { closedCount });
       }
     } catch (error) {
-      logger.error("CBT expiry sweeper tick failed", {
-        error: error.message
-      });
+      const err = error;
+      const causeMessage = err.cause?.message;
+      const isTransientTimeout = /timeout|ECONNRESET|ETIMEDOUT/i.test(causeMessage ?? err.message);
+      if (isTransientTimeout) {
+        logger.warn("CBT expiry sweeper skipped due to transient DB timeout; will retry next tick", {
+          cause: causeMessage ?? err.message
+        });
+      } else {
+        logger.error("CBT expiry sweeper tick failed", {
+          error: err.message,
+          cause: causeMessage
+        });
+      }
+    } finally {
+      isTickRunning = false;
     }
   }, intervalMs);
   sweeperInterval.unref();

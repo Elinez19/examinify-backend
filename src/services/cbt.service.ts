@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import { Request } from "express";
 import { db } from "../db";
 import {
@@ -10,9 +10,12 @@ import {
   examSections,
   examTargetClasses,
   proctoringEvents,
+  studentProfiles,
+  user,
 } from "../db/schema";
+import { AttemptStatus } from "../db/schema/enums";
 import { cacheStore } from "../config/redis.config";
-import { RequestAuthContext } from "../types/express";
+import { AuthenticatedUser, RequestAuthContext } from "../types/express";
 import { compareValue } from "../utils/bcrypt";
 import {
   BadRequestException,
@@ -637,6 +640,311 @@ export const cbtService = {
       );
 
     return Promise.all(attempts.map((a) => this.getStudentResultView(a.id)));
+  },
+
+  async listExamAttempts(
+    actor: AuthenticatedUser,
+    examId: string,
+    filters?: { status?: AttemptStatus }
+  ) {
+    const [exam] = await db
+      .select()
+      .from(exams)
+      .where(and(eq(exams.id, examId), isNull(exams.deletedAt)))
+      .limit(1);
+
+    if (!exam) {
+      throw new NotFoundException("Exam not found.");
+    }
+
+    if (exam.branchId) {
+      scopeService.assertBranchSchoolScope(actor, {
+        branchId: exam.branchId,
+        schoolId: exam.schoolId,
+      });
+    }
+
+    if (actor.role === "teacher" && exam.createdBy !== actor.id) {
+      const targets = await db
+        .select({ classId: examTargetClasses.classId })
+        .from(examTargetClasses)
+        .where(eq(examTargetClasses.examId, examId));
+
+      let hasClassAccess = false;
+      for (const t of targets) {
+        try {
+          await scopeService.assertTeacherClassSubjectAccess(actor, t.classId);
+          hasClassAccess = true;
+          break;
+        } catch {
+          // continue checking remaining target classes
+        }
+      }
+      if (!hasClassAccess) {
+        throw new ForbiddenException("Access denied: you are not assigned to monitor this exam.");
+      }
+    }
+
+    const conditions = [
+      eq(examAttempts.examId, examId),
+      isNull(examAttempts.deletedAt),
+    ];
+    if (filters?.status) {
+      conditions.push(eq(examAttempts.status, filters.status));
+    }
+
+    const rows = await db
+      .select({
+        attempt: examAttempts,
+        studentName: user.name,
+        username: user.username,
+        studentEmail: user.email,
+        registrationNumber: studentProfiles.registrationNumber,
+      })
+      .from(examAttempts)
+      .innerJoin(studentProfiles, eq(examAttempts.studentProfileId, studentProfiles.id))
+      .innerJoin(user, eq(examAttempts.userId, user.id))
+      .where(and(...conditions))
+      .orderBy(desc(examAttempts.startedAt))
+      .limit(500);
+
+    const theorySnapshots = await db
+      .select({ id: examQuestionSnapshots.id })
+      .from(examQuestionSnapshots)
+      .where(
+        and(
+          eq(examQuestionSnapshots.examId, examId),
+          eq(examQuestionSnapshots.type, "theory")
+        )
+      );
+    const theoryIds = theorySnapshots.map((s) => s.id);
+
+    const attemptIds = rows.map((r) => r.attempt.id);
+    const gradedTheoryByAttempt = new Map<string, number>();
+
+    if (theoryIds.length > 0 && attemptIds.length > 0) {
+      const theoryAnswers = await db
+        .select({
+          attemptId: attemptAnswers.attemptId,
+          awardedPoints: attemptAnswers.awardedPoints,
+        })
+        .from(attemptAnswers)
+        .where(
+          and(
+            inArray(attemptAnswers.attemptId, attemptIds),
+            inArray(attemptAnswers.snapshotQuestionId, theoryIds)
+          )
+        );
+
+      for (const ans of theoryAnswers) {
+        if (ans.awardedPoints !== null) {
+          gradedTheoryByAttempt.set(
+            ans.attemptId,
+            (gradedTheoryByAttempt.get(ans.attemptId) ?? 0) + 1
+          );
+        }
+      }
+    }
+
+    return Promise.all(
+      rows.map(async ({ attempt, studentName, username, studentEmail, registrationNumber }) => {
+        const cachedLock =
+          attempt.status === "in_progress"
+            ? await cacheStore.get(attemptLockKey(attempt.id))
+            : null;
+        const isLocked = Boolean(cachedLock ?? attempt.lockedSessionId);
+        const gradedTheory = gradedTheoryByAttempt.get(attempt.id) ?? 0;
+        const pendingTheoryCount = Math.max(0, theoryIds.length - gradedTheory);
+
+        return {
+          attemptId: attempt.id,
+          examId: attempt.examId,
+          studentProfileId: attempt.studentProfileId,
+          userId: attempt.userId,
+          studentName,
+          username,
+          studentEmail,
+          registrationNumber,
+          status: attempt.status,
+          isLocked,
+          startedAt: attempt.startedAt,
+          serverExpiresAt: attempt.serverExpiresAt,
+          submittedAt: attempt.submittedAt,
+          infractionCount: attempt.infractionCount,
+          aggregateScore: attempt.aggregateScore !== null ? Number(attempt.aggregateScore) : null,
+          maxPossibleScore:
+            attempt.maxPossibleScore !== null ? Number(attempt.maxPossibleScore) : null,
+          aggregatePercentage:
+            attempt.aggregatePercentage !== null ? Number(attempt.aggregatePercentage) : null,
+          gradeLetter: attempt.gradeLetter,
+          performanceRemark: attempt.performanceRemark,
+          isPassed: attempt.isPassed,
+          resultsReleased: attempt.resultsReleased,
+          pendingTheoryCount,
+        };
+      })
+    );
+  },
+
+  async getAttemptDetailForStaff(actor: AuthenticatedUser, attemptId: string) {
+    const [row] = await db
+      .select({
+        attempt: examAttempts,
+        studentName: user.name,
+        username: user.username,
+        studentEmail: user.email,
+        registrationNumber: studentProfiles.registrationNumber,
+      })
+      .from(examAttempts)
+      .innerJoin(studentProfiles, eq(examAttempts.studentProfileId, studentProfiles.id))
+      .innerJoin(user, eq(examAttempts.userId, user.id))
+      .where(and(eq(examAttempts.id, attemptId), isNull(examAttempts.deletedAt)))
+      .limit(1);
+
+    if (!row) {
+      throw new NotFoundException("Exam attempt not found.");
+    }
+
+    const [exam] = await db
+      .select()
+      .from(exams)
+      .where(and(eq(exams.id, row.attempt.examId), isNull(exams.deletedAt)))
+      .limit(1);
+
+    if (!exam) {
+      throw new NotFoundException("Exam not found.");
+    }
+
+    if (exam.branchId) {
+      scopeService.assertBranchSchoolScope(actor, {
+        branchId: exam.branchId,
+        schoolId: exam.schoolId,
+      });
+    }
+
+    if (actor.role === "teacher" && exam.createdBy !== actor.id) {
+      const targets = await db
+        .select({ classId: examTargetClasses.classId })
+        .from(examTargetClasses)
+        .where(eq(examTargetClasses.examId, exam.id));
+
+      let hasClassAccess = false;
+      for (const t of targets) {
+        try {
+          await scopeService.assertTeacherClassSubjectAccess(actor, t.classId);
+          hasClassAccess = true;
+          break;
+        } catch {
+          // check next class
+        }
+      }
+      if (!hasClassAccess) {
+        throw new ForbiddenException("Access denied: you are not assigned to review this attempt.");
+      }
+    }
+
+    const [snapshots, answers, events, subjectScores] = await Promise.all([
+      db
+        .select()
+        .from(examQuestionSnapshots)
+        .where(eq(examQuestionSnapshots.examId, exam.id))
+        .orderBy(examQuestionSnapshots.questionNumber),
+      db
+        .select()
+        .from(attemptAnswers)
+        .where(eq(attemptAnswers.attemptId, attemptId)),
+      db
+        .select()
+        .from(proctoringEvents)
+        .where(eq(proctoringEvents.attemptId, attemptId))
+        .orderBy(desc(proctoringEvents.occurredAt)),
+      db
+        .select()
+        .from(attemptSubjectScores)
+        .where(eq(attemptSubjectScores.attemptId, attemptId)),
+    ]);
+
+    const answerMap = new Map(answers.map((a) => [a.snapshotQuestionId, a]));
+
+    const items = snapshots.map((snap) => {
+      const ans = answerMap.get(snap.id);
+      return {
+        answerId: ans?.id ?? null,
+        snapshotQuestionId: snap.id,
+        sectionId: snap.sectionId,
+        subjectId: snap.subjectId,
+        questionNumber: snap.questionNumber,
+        type: snap.type,
+        prompt: snap.prompt,
+        contextSnippet: snap.contextSnippet,
+        imageUrl: snap.imageUrl,
+        imageCaption: snap.imageCaption,
+        options: snap.options,
+        correctOptionId: snap.correctOptionId,
+        shortAnswer: snap.shortAnswer,
+        acceptedAnswers: snap.acceptedAnswers,
+        theoryAnswer: snap.theoryAnswer,
+        rubrics: snap.rubrics,
+        maxPoints: Number(snap.points),
+        explanation: snap.explanation,
+        studentResponse: ans
+          ? {
+              selectedOptionId: ans.selectedOptionId,
+              textResponse: ans.textResponse,
+              isFlagged: ans.isFlagged,
+              isVisited: ans.isVisited,
+              isCorrect: ans.isCorrect,
+              awardedPoints: ans.awardedPoints !== null ? Number(ans.awardedPoints) : null,
+              rubricBreakdown: ans.rubricBreakdown,
+              graderFeedback: ans.graderFeedback,
+              gradedBy: ans.gradedBy,
+              gradedAt: ans.gradedAt,
+              updatedAt: ans.updatedAt,
+            }
+          : null,
+      };
+    });
+
+    const cachedLock =
+      row.attempt.status === "in_progress"
+        ? await cacheStore.get(attemptLockKey(row.attempt.id))
+        : null;
+
+    return {
+      attempt: {
+        id: row.attempt.id,
+        examId: row.attempt.examId,
+        examTitle: exam.title,
+        studentProfileId: row.attempt.studentProfileId,
+        userId: row.attempt.userId,
+        studentName: row.studentName,
+        username: row.username,
+        studentEmail: row.studentEmail,
+        registrationNumber: row.registrationNumber,
+        status: row.attempt.status,
+        isLocked: Boolean(cachedLock ?? row.attempt.lockedSessionId),
+        startedAt: row.attempt.startedAt,
+        serverExpiresAt: row.attempt.serverExpiresAt,
+        submittedAt: row.attempt.submittedAt,
+        infractionCount: row.attempt.infractionCount,
+        maxInfractions: exam.maxInfractions,
+        aggregateScore:
+          row.attempt.aggregateScore !== null ? Number(row.attempt.aggregateScore) : null,
+        maxPossibleScore:
+          row.attempt.maxPossibleScore !== null ? Number(row.attempt.maxPossibleScore) : null,
+        aggregatePercentage:
+          row.attempt.aggregatePercentage !== null
+            ? Number(row.attempt.aggregatePercentage)
+            : null,
+        gradeLetter: row.attempt.gradeLetter,
+        performanceRemark: row.attempt.performanceRemark,
+        isPassed: row.attempt.isPassed,
+        resultsReleased: row.attempt.resultsReleased,
+      },
+      items,
+      subjectScores,
+      proctoringEvents: events,
+    };
   },
 
   async forceSubmitAttempt(

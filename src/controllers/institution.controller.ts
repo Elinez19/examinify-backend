@@ -87,6 +87,27 @@ export const institutionController = {
     res.status(HttpStatus.CREATED).json({ success: true, data });
   },
 
+  async listClassStudents(req: Request, res: Response) {
+    const sessionId =
+      typeof req.query.sessionId === "string" ? req.query.sessionId : undefined;
+    const data = await institutionService.listClassStudents(
+      req.auth!.user,
+      String(req.params.classId),
+      sessionId
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async listTeacherAssignments(req: Request, res: Response) {
+    const data = await institutionService.listTeacherAssignments(req.auth!.user, {
+      classId: typeof req.query.classId === "string" ? req.query.classId : undefined,
+      staffProfileId:
+        typeof req.query.staffProfileId === "string" ? req.query.staffProfileId : undefined,
+      sessionId: typeof req.query.sessionId === "string" ? req.query.sessionId : undefined,
+    });
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
   async recordAttendance(req: Request, res: Response) {
     const payload = recordAttendanceSchema.parse(req.body);
     const data = await institutionService.recordAttendance(req.auth!.user, payload, req);

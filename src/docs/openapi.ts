@@ -124,6 +124,13 @@ export const getOpenApiSpec = (serverUrl?: string) => {
         get: { tags: ["Institution & Academics"], summary: "List classes", responses: { "200": { description: "OK" } } },
         post: { tags: ["Institution & Academics"], summary: "Create class", responses: { "201": { description: "Created" } } },
       },
+      "/api/v1/institution/classes/{classId}/students": {
+        get: { tags: ["Institution & Academics"], summary: "List actively enrolled students in a class", responses: { "200": { description: "Class student roster" } } },
+      },
+      "/api/v1/institution/teacher-assignments": {
+        get: { tags: ["Institution & Academics"], summary: "List scoped teacher class/subject assignments", responses: { "200": { description: "OK" } } },
+        post: { tags: ["Institution & Academics"], summary: "Assign teacher to class/subject", responses: { "201": { description: "Created" } } },
+      },
       "/api/v1/institution/attendance": {
         get: { tags: ["Institution & Academics"], summary: "List attendance records", responses: { "200": { description: "OK" } } },
         post: { tags: ["Institution & Academics"], summary: "Record class attendance", responses: { "200": { description: "Saved" } } },
@@ -150,6 +157,11 @@ export const getOpenApiSpec = (serverUrl?: string) => {
         get: { tags: ["Exams"], summary: "List scoped exams", responses: { "200": { description: "OK" } } },
         post: { tags: ["Exams"], summary: "Create draft exam with sections and target classes", responses: { "201": { description: "Created" } } },
       },
+      "/api/v1/exams/{examId}": {
+        get: { tags: ["Exams"], summary: "Get exam detail with sections and target classes", responses: { "200": { description: "OK" } } },
+        patch: { tags: ["Exams"], summary: "Update draft exam settings or close a live/scheduled exam", responses: { "200": { description: "Updated exam" } } },
+        delete: { tags: ["Exams"], summary: "Soft-delete draft or pending_approval exam", responses: { "200": { description: "Deleted" } } },
+      },
       "/api/v1/exams/{examId}/publish": {
         post: {
           tags: ["Exams"],
@@ -162,6 +174,27 @@ export const getOpenApiSpec = (serverUrl?: string) => {
           tags: ["Exams"],
           summary: "Approve, freeze snapshots, and schedule/open exam (Examiner/School Admin)",
           responses: { "200": { description: "Approved exam" } },
+        },
+      },
+      "/api/v1/exams/{examId}/release-results": {
+        post: {
+          tags: ["Exams"],
+          summary: "Release finalized attempt results to students and optionally mark exam published",
+          responses: { "200": { description: "Results released" } },
+        },
+      },
+      "/api/v1/exams/{examId}/attempts": {
+        get: {
+          tags: ["CBT Attempts"],
+          summary: "List live and submitted student attempts for staff monitoring & grading",
+          responses: { "200": { description: "Attempt roster" } },
+        },
+      },
+      "/api/v1/attempts/{attemptId}": {
+        get: {
+          tags: ["CBT Attempts"],
+          summary: "Inspect attempt answers, snapshots, rubrics, and proctoring logs (Staff)",
+          responses: { "200": { description: "Attempt script detail" } },
         },
       },
       "/api/v1/exams/{examId}/attempts/start": {
@@ -212,6 +245,9 @@ export const getOpenApiSpec = (serverUrl?: string) => {
       },
       "/api/v1/gradebook/export": {
         get: { tags: ["Gradebook"], summary: "Export class term gradebook as CSV", responses: { "200": { description: "CSV file" } } },
+      },
+      "/api/v1/gradebook/publish": {
+        post: { tags: ["Gradebook"], summary: "Publish or unpublish class term gradebook records to students", responses: { "200": { description: "Publish summary" } } },
       },
     },
     components: {

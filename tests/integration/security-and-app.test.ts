@@ -42,10 +42,24 @@ describe("API Security Boundaries, MFA Gate & Branch/School ABAC", () => {
   });
 
   it("returns 401 Unauthorized for unauthenticated calls to protected /api/v1 endpoints", async () => {
-    const res = await request(app).get("/api/v1/users/me");
-    expect(res.status).toBe(401);
-    expect(res.body.success).toBe(false);
-    expect(res.body.errorCode).toBe(ErrorCodes.ERR_UNAUTHORIZED);
+    const endpoints: Array<{ method: "get" | "post" | "patch" | "delete"; path: string }> = [
+      { method: "get", path: "/api/v1/users/me" },
+      { method: "get", path: "/api/v1/institution/classes/00000000-0000-0000-0000-000000000000/students" },
+      { method: "get", path: "/api/v1/institution/teacher-assignments" },
+      { method: "get", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000/attempts" },
+      { method: "patch", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000" },
+      { method: "delete", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000" },
+      { method: "post", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000/release-results" },
+      { method: "get", path: "/api/v1/attempts/00000000-0000-0000-0000-000000000000" },
+      { method: "post", path: "/api/v1/gradebook/publish" },
+    ];
+
+    for (const ep of endpoints) {
+      const res = await request(app)[ep.method](ep.path);
+      expect(res.status).toBe(401);
+      expect(res.body.success).toBe(false);
+      expect(res.body.errorCode).toBe(ErrorCodes.ERR_UNAUTHORIZED);
+    }
   });
 
   it("blocks super_admin and school_admin without 2FA enabled via requireMfaForAdmins", () => {

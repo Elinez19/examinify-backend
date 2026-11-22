@@ -32,6 +32,18 @@ examsRoutes.post(
   asyncHandler(examController.createExam)
 );
 
+examsRoutes.patch(
+  "/:examId",
+  requirePermission(PERMISSIONS.EXAM_CREATE),
+  asyncHandler(examController.updateExam)
+);
+
+examsRoutes.delete(
+  "/:examId",
+  requirePermission(PERMISSIONS.EXAM_CREATE),
+  asyncHandler(examController.deleteExam)
+);
+
 examsRoutes.post(
   "/:examId/publish",
   requirePermission(PERMISSIONS.EXAM_PUBLISH_CA),
@@ -42,6 +54,19 @@ examsRoutes.post(
   "/:examId/approve",
   requirePermission(PERMISSIONS.EXAM_APPROVE),
   asyncHandler(examController.approveExam)
+);
+
+examsRoutes.post(
+  "/:examId/release-results",
+  requirePermission(PERMISSIONS.EXAM_APPROVE),
+  asyncHandler(examController.releaseExamResults)
+);
+
+// Staff live monitoring & grading attempt roster
+examsRoutes.get(
+  "/:examId/attempts",
+  requirePermission(PERMISSIONS.EXAM_MONITOR),
+  asyncHandler(cbtController.listExamAttempts)
 );
 
 // Student starts or resumes a live CBT attempt

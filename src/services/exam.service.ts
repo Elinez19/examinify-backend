@@ -2,6 +2,7 @@ import { and, desc, eq, inArray, isNull, or } from "drizzle-orm";
 import { Request } from "express";
 import { db } from "../db";
 import {
+  examAttempts,
   examQuestionLinks,
   examQuestionSnapshots,
   exams,
@@ -19,7 +20,12 @@ import {
 } from "../utils/app-error";
 import { auditService } from "./audit.service";
 import { scopeService } from "./scope.service";
-import { ApproveExamInput, CreateExamInput } from "../validators/exam.validator";
+import {
+  ApproveExamInput,
+  CreateExamInput,
+  ReleaseExamResultsInput,
+  UpdateExamInput,
+} from "../validators/exam.validator";
 
 /**
  * Determines whether an exam requires Examiner or School Admin approval before
@@ -483,5 +489,227 @@ export const examService = {
 
     const { accessPinHash: _p, ...safe } = approved;
     return { ...safe, requiresAccessPin: Boolean(_p) };
+  },
+
+  async update(
+    actor: AuthenticatedUser,
+    examId: string,
+    input: UpdateExamInput,
+    req?: Request
+  ) {
+    const [exam] = await db
+      .select()
+      .from(exams)
+      .where(and(eq(exams.id, examId), isNull(exams.deletedAt)))
+      .limit(1);
+
+    if (!exam) {
+      throw new NotFoundException("Exam not found.");
+    }
+
+    if (exam.branchId) {
+      scopeService.assertBranchSchoolScope(actor, {
+        branchId: exam.branchId,
+        schoolId: exam.schoolId,
+      });
+    }
+
+    if (actor.role === "teacher" && exam.createdBy !== actor.id) {
+      throw new ForbiddenException("Teachers can only modify exams they created.");
+    }
+
+    const isEditableDraft =
+      exam.status === "draft" || exam.status === "pending_approval";
+    const isClosingLiveExam =
+      input.status === "completed" &&
+      (exam.status === "live" || exam.status === "scheduled");
+
+    if (!isEditableDraft && !isClosingLiveExam) {
+      throw new BadRequestException(
+        "Only draft or pending_approval exams can be edited. Live/scheduled exams can only be closed (status: 'completed')."
+      );
+    }
+
+    if (
+      isClosingLiveExam &&
+      actor.role === "teacher" &&
+      requiresApprovalGate(exam.assessmentType, exam.sessionType)
+    ) {
+      throw new ForbiddenException(
+        "Only Examiners or School Admins can close Terminal or National Mock exams."
+      );
+    }
+
+    const updatePayload: Partial<typeof exams.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+
+    if (isClosingLiveExam && !isEditableDraft) {
+      updatePayload.status = "completed";
+      updatePayload.endsAt = new Date();
+    } else {
+      if (input.title !== undefined) updatePayload.title = input.title;
+      if (input.instructions !== undefined) updatePayload.instructions = input.instructions;
+      if (input.durationMinutes !== undefined) updatePayload.durationMinutes = input.durationMinutes;
+      if (input.passingScore !== undefined) updatePayload.passingScore = input.passingScore.toFixed(2);
+      if (input.scheduledAt !== undefined) updatePayload.scheduledAt = input.scheduledAt;
+      if (input.endsAt !== undefined) updatePayload.endsAt = input.endsAt;
+      if (input.accessPin !== undefined) {
+        updatePayload.accessPinHash = input.accessPin ? await hashValue(input.accessPin) : null;
+      }
+      if (input.status !== undefined) updatePayload.status = input.status;
+      if (input.allowCalculator !== undefined) updatePayload.allowCalculator = input.allowCalculator;
+      if (input.shuffleQuestions !== undefined) updatePayload.shuffleQuestions = input.shuffleQuestions;
+      if (input.shuffleOptions !== undefined) updatePayload.shuffleOptions = input.shuffleOptions;
+      if (input.allowBackwardNavigation !== undefined) {
+        updatePayload.allowBackwardNavigation = input.allowBackwardNavigation;
+      }
+      if (input.strictProctoring !== undefined) updatePayload.strictProctoring = input.strictProctoring;
+      if (input.maxInfractions !== undefined) updatePayload.maxInfractions = input.maxInfractions;
+      if (input.maxTabSwitches !== undefined) updatePayload.maxTabSwitches = input.maxTabSwitches;
+      if (input.autoPublishResults !== undefined) updatePayload.autoPublishResults = input.autoPublishResults;
+      if (input.showStudentFeedback !== undefined) updatePayload.showStudentFeedback = input.showStudentFeedback;
+      if (input.showCorrectAnswers !== undefined) updatePayload.showCorrectAnswers = input.showCorrectAnswers;
+      if (input.enableLiveMonitoring !== undefined) {
+        updatePayload.enableLiveMonitoring = input.enableLiveMonitoring;
+      }
+    }
+
+    const [updated] = await db
+      .update(exams)
+      .set(updatePayload)
+      .where(eq(exams.id, examId))
+      .returning();
+
+    await auditService.log({
+      action: isClosingLiveExam ? "exam.close" : "exam.update",
+      entityType: "exam",
+      entityId: examId,
+      branchId: exam.branchId,
+      schoolId: exam.schoolId,
+      metadata: { status: updated.status, fields: Object.keys(input) },
+      req,
+    });
+
+    const { accessPinHash: _p, ...safe } = updated;
+    return { ...safe, requiresAccessPin: Boolean(_p) };
+  },
+
+  async softDelete(actor: AuthenticatedUser, examId: string, req?: Request) {
+    const [exam] = await db
+      .select()
+      .from(exams)
+      .where(and(eq(exams.id, examId), isNull(exams.deletedAt)))
+      .limit(1);
+
+    if (!exam) {
+      throw new NotFoundException("Exam not found.");
+    }
+
+    if (exam.branchId) {
+      scopeService.assertBranchSchoolScope(actor, {
+        branchId: exam.branchId,
+        schoolId: exam.schoolId,
+      });
+    }
+
+    if (actor.role === "teacher" && exam.createdBy !== actor.id) {
+      throw new ForbiddenException("Teachers can only delete draft exams they created.");
+    }
+
+    if (exam.status !== "draft" && exam.status !== "pending_approval") {
+      throw new BadRequestException(
+        "Cannot delete an exam that is already scheduled, live, completed, or published."
+      );
+    }
+
+    await db
+      .update(exams)
+      .set({ deletedAt: new Date(), updatedAt: new Date() })
+      .where(eq(exams.id, examId));
+
+    await auditService.log({
+      action: "exam.delete",
+      entityType: "exam",
+      entityId: examId,
+      branchId: exam.branchId,
+      schoolId: exam.schoolId,
+      metadata: { title: exam.title },
+      req,
+    });
+
+    return { deleted: true, id: examId };
+  },
+
+  async releaseResults(
+    actor: AuthenticatedUser,
+    examId: string,
+    input: ReleaseExamResultsInput,
+    req?: Request
+  ) {
+    const [exam] = await db
+      .select()
+      .from(exams)
+      .where(and(eq(exams.id, examId), isNull(exams.deletedAt)))
+      .limit(1);
+
+    if (!exam) {
+      throw new NotFoundException("Exam not found.");
+    }
+
+    if (exam.branchId) {
+      scopeService.assertBranchSchoolScope(actor, {
+        branchId: exam.branchId,
+        schoolId: exam.schoolId,
+      });
+    }
+
+    const allowedStatuses: Array<"submitted" | "auto_submitted" | "graded" | "flagged"> =
+      input.includeFlagged
+        ? ["submitted", "auto_submitted", "graded", "flagged"]
+        : ["submitted", "auto_submitted", "graded"];
+
+    const conditions = [
+      eq(examAttempts.examId, examId),
+      inArray(examAttempts.status, allowedStatuses),
+      isNull(examAttempts.deletedAt),
+    ];
+
+    if (input.attemptIds && input.attemptIds.length > 0) {
+      conditions.push(inArray(examAttempts.id, input.attemptIds));
+    }
+
+    const released = await db
+      .update(examAttempts)
+      .set({ resultsReleased: true, updatedAt: new Date() })
+      .where(and(...conditions))
+      .returning({ id: examAttempts.id });
+
+    if (input.markExamPublished && exam.status !== "published") {
+      await db
+        .update(exams)
+        .set({ status: "published", updatedAt: new Date() })
+        .where(eq(exams.id, examId));
+    }
+
+    await auditService.log({
+      action: "exam.release_results",
+      entityType: "exam",
+      entityId: examId,
+      branchId: exam.branchId,
+      schoolId: exam.schoolId,
+      metadata: {
+        releasedCount: released.length,
+        includeFlagged: input.includeFlagged,
+        markExamPublished: input.markExamPublished,
+      },
+      req,
+    });
+
+    return {
+      examId,
+      releasedCount: released.length,
+      examStatus: input.markExamPublished ? "published" : exam.status,
+    };
   },
 };
