@@ -91,6 +91,11 @@ export const updateUserStatusSchema = z.object({
   reason: z.string().trim().max(255).optional(),
 });
 
+export const updateUserRoleSchema = z.object({
+  role: z.enum(["school_admin", "examiner", "teacher", "non_academic_staff"]),
+  reason: z.string().trim().max(255).optional(),
+});
+
 export const completeFirstLoginSchema = z.object({
   currentPassword: z.string().min(1),
   newPassword: z.string().min(8).max(128),

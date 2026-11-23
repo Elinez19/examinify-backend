@@ -62,6 +62,11 @@ institutionRoutes.post(
   requirePermission(PERMISSIONS.CLASS_MANAGE),
   asyncHandler(institutionController.createClass)
 );
+institutionRoutes.patch(
+  "/classes/:classId",
+  requirePermission(PERMISSIONS.CLASS_MANAGE),
+  asyncHandler(institutionController.updateClass)
+);
 institutionRoutes.get(
   "/classes/:classId/students",
   requirePermission(PERMISSIONS.CLASS_READ),
@@ -86,6 +91,11 @@ institutionRoutes.post(
   "/teacher-assignments",
   requirePermission(PERMISSIONS.ASSIGNMENT_MANAGE),
   asyncHandler(institutionController.createTeacherAssignment)
+);
+institutionRoutes.delete(
+  "/teacher-assignments/:assignmentId",
+  requirePermission(PERMISSIONS.ASSIGNMENT_MANAGE),
+  asyncHandler(institutionController.deleteTeacherAssignment)
 );
 
 // Attendance (non_academic_staff, teachers, admins)

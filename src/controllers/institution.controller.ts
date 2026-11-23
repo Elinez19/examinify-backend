@@ -10,6 +10,7 @@ import {
   createTeacherAssignmentSchema,
   createTermSchema,
   recordAttendanceSchema,
+  updateClassSchema,
 } from "../validators/institution.validator";
 import { BadRequestException } from "../utils/app-error";
 
@@ -66,6 +67,17 @@ export const institutionController = {
     res.status(HttpStatus.CREATED).json({ success: true, data });
   },
 
+  async updateClass(req: Request, res: Response) {
+    const payload = updateClassSchema.parse(req.body);
+    const data = await institutionService.updateClass(
+      req.auth!.user,
+      String(req.params.classId),
+      payload,
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
   async listSubjects(req: Request, res: Response) {
     const level =
       req.query.schoolLevel === "primary" || req.query.schoolLevel === "secondary"
@@ -85,6 +97,15 @@ export const institutionController = {
     const payload = createTeacherAssignmentSchema.parse(req.body);
     const data = await institutionService.createTeacherAssignment(req.auth!.user, payload, req);
     res.status(HttpStatus.CREATED).json({ success: true, data });
+  },
+
+  async deleteTeacherAssignment(req: Request, res: Response) {
+    const data = await institutionService.deleteTeacherAssignment(
+      req.auth!.user,
+      String(req.params.assignmentId),
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
   },
 
   async listClassStudents(req: Request, res: Response) {

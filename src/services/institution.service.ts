@@ -18,7 +18,9 @@ import {
 } from "../db/schema";
 import { AuthenticatedUser } from "../types/express";
 import { BadRequestException, ForbiddenException, NotFoundException } from "../utils/app-error";
+import { isGradeAllowedForSchoolLevel } from "../config/preassigned-classes.config";
 import { auditService } from "./audit.service";
+import { preassignedClassesService } from "./preassigned-classes.service";
 import { scopeService } from "./scope.service";
 
 export const institutionService = {
@@ -47,7 +49,7 @@ export const institutionService = {
   },
 
   async listSchools(branchId?: string) {
-    const conditions = [isNull(schools.deletedAt)];
+    const conditions = [isNull(schools.deletedAt), eq(schools.isActive, true)];
     if (branchId) conditions.push(eq(schools.branchId, branchId));
     return db
       .select()
@@ -61,6 +63,12 @@ export const institutionService = {
     req?: Request
   ) {
     const [created] = await db.insert(schools).values(input).returning();
+
+    await preassignedClassesService.ensurePreassignedClassesForSchoolActiveSession(
+      created.id,
+      created.level
+    );
+
     await auditService.log({
       action: "institution.school.create",
       entityType: "school",
@@ -96,6 +104,11 @@ export const institutionService = {
       const [row] = await tx.insert(academicSessions).values(input).returning();
       return row;
     });
+
+    await preassignedClassesService.ensurePreassignedClassesForAllSchoolsInSession(
+      created.id
+    );
+
     await auditService.log({
       action: "institution.session.create",
       entityType: "academic_session",
@@ -136,11 +149,16 @@ export const institutionService = {
 
   async listClasses(actor: AuthenticatedUser, schoolId?: string) {
     const conditions = [isNull(classes.deletedAt)];
-    const effectiveSchoolId =
-      actor.role === "super_admin" ? schoolId : actor.primarySchoolId ?? schoolId;
-    if (effectiveSchoolId) {
-      conditions.push(eq(classes.schoolId, effectiveSchoolId));
+
+    if (actor.role !== "super_admin") {
+      if (!actor.primarySchoolId) {
+        return [];
+      }
+      conditions.push(eq(classes.schoolId, actor.primarySchoolId));
+    } else if (schoolId) {
+      conditions.push(eq(classes.schoolId, schoolId));
     }
+
     return db
       .select()
       .from(classes)
@@ -164,18 +182,31 @@ export const institutionService = {
     },
     req?: Request
   ) {
-    const targetSchoolId = input.schoolId ?? actor.primarySchoolId;
+    const targetSchoolId =
+      actor.role === "super_admin"
+        ? input.schoolId ?? actor.primarySchoolId
+        : actor.primarySchoolId;
     if (!targetSchoolId) {
       throw new BadRequestException("schoolId is required.");
     }
     const school = await scopeService.assertSchoolAccess(actor, targetSchoolId);
+
+    if (!isGradeAllowedForSchoolLevel(`${input.gradeLevel} ${input.name}`, school.level)) {
+      const expected =
+        school.level === "primary"
+          ? "Primary / Early Years (Playgroup – Grade 6)"
+          : "Secondary (JSS 1 – SS 3)";
+      throw new BadRequestException(
+        `${school.name} is a ${school.level} school and only supports ${expected} classes.`
+      );
+    }
 
     const [created] = await db
       .insert(classes)
       .values({
         ...input,
         schoolId: school.id,
-        isPrimarySelfContained: input.isPrimarySelfContained ?? school.level === "primary",
+        isPrimarySelfContained: school.level === "primary",
       })
       .returning();
 
@@ -189,6 +220,106 @@ export const institutionService = {
       req,
     });
     return created;
+  },
+
+  async updateClass(
+    actor: AuthenticatedUser,
+    classId: string,
+    input: {
+      name?: string;
+      code?: string;
+      gradeLevel?: string;
+      department?: string | null;
+      room?: string | null;
+      formMasterId?: string | null;
+      description?: string | null;
+    },
+    req?: Request
+  ) {
+    const [existing] = await db
+      .select()
+      .from(classes)
+      .where(and(eq(classes.id, classId), isNull(classes.deletedAt)))
+      .limit(1);
+
+    if (!existing) {
+      throw new NotFoundException("Class not found.");
+    }
+
+    const school = await scopeService.assertSchoolAccess(actor, existing.schoolId);
+
+    if (input.name !== undefined || input.gradeLevel !== undefined) {
+      const nextGrade = input.gradeLevel ?? existing.gradeLevel;
+      const nextName = input.name ?? existing.name;
+      if (!isGradeAllowedForSchoolLevel(`${nextGrade} ${nextName}`, school.level)) {
+        const expected =
+          school.level === "primary"
+            ? "Primary / Early Years (Playgroup – Grade 6)"
+            : "Secondary (JSS 1 – SS 3)";
+        throw new BadRequestException(
+          `${school.name} is a ${school.level} school and only supports ${expected} classes.`
+        );
+      }
+    }
+
+    if (input.formMasterId) {
+      const [formMaster] = await db
+        .select({
+          id: user.id,
+          role: user.role,
+          primarySchoolId: user.primarySchoolId,
+        })
+        .from(user)
+        .where(and(eq(user.id, input.formMasterId), isNull(user.deletedAt)))
+        .limit(1);
+
+      if (!formMaster) {
+        throw new NotFoundException("Selected class teacher was not found.");
+      }
+      if (formMaster.role === "student") {
+        throw new BadRequestException("A student cannot be assigned as a class teacher.");
+      }
+      if (
+        formMaster.primarySchoolId &&
+        formMaster.primarySchoolId !== existing.schoolId
+      ) {
+        throw new ForbiddenException(
+          "Selected teacher does not belong to this class's school."
+        );
+      }
+    }
+
+    const updateFields: Partial<typeof classes.$inferInsert> = {
+      updatedAt: new Date(),
+    };
+    if (input.name !== undefined) updateFields.name = input.name;
+    if (input.code !== undefined) updateFields.code = input.code;
+    if (input.gradeLevel !== undefined) updateFields.gradeLevel = input.gradeLevel;
+    if (input.department !== undefined) updateFields.department = input.department;
+    if (input.room !== undefined) updateFields.room = input.room;
+    if (input.formMasterId !== undefined) updateFields.formMasterId = input.formMasterId;
+    if (input.description !== undefined) updateFields.description = input.description;
+
+    const [updated] = await db
+      .update(classes)
+      .set(updateFields)
+      .where(eq(classes.id, classId))
+      .returning();
+
+    await auditService.log({
+      action: "academics.class.update",
+      entityType: "class",
+      entityId: updated.id,
+      branchId: school.branchId,
+      schoolId: school.id,
+      metadata: {
+        formMasterId: updated.formMasterId,
+        name: updated.name,
+      },
+      req,
+    });
+
+    return updated;
   },
 
   async listSubjects(schoolLevel?: "primary" | "secondary") {
@@ -256,10 +387,48 @@ export const institutionService = {
     }
     const school = await scopeService.assertSchoolAccess(actor, targetSchoolId);
 
+    const [targetClass] = await db
+      .select({ id: classes.id, schoolId: classes.schoolId })
+      .from(classes)
+      .where(and(eq(classes.id, input.classId), isNull(classes.deletedAt)))
+      .limit(1);
+
+    if (!targetClass) {
+      throw new NotFoundException("Class not found.");
+    }
+    if (targetClass.schoolId !== school.id) {
+      throw new ForbiddenException(
+        "Access denied: target class belongs to a different school."
+      );
+    }
+
     if (!input.isAllClassSubjects && !input.subjectId) {
       throw new BadRequestException(
         "subjectId is required unless isAllClassSubjects is true (Primary self-contained class)."
       );
+    }
+
+    const normalizedSubjectId = input.isAllClassSubjects ? null : input.subjectId ?? null;
+    const dupConditions = [
+      eq(teacherAssignments.staffProfileId, input.staffProfileId),
+      eq(teacherAssignments.classId, input.classId),
+      eq(teacherAssignments.sessionId, input.sessionId),
+      eq(teacherAssignments.isAllClassSubjects, Boolean(input.isAllClassSubjects)),
+    ];
+    if (normalizedSubjectId) {
+      dupConditions.push(eq(teacherAssignments.subjectId, normalizedSubjectId));
+    } else {
+      dupConditions.push(isNull(teacherAssignments.subjectId));
+    }
+
+    const [existingAssignment] = await db
+      .select()
+      .from(teacherAssignments)
+      .where(and(...dupConditions))
+      .limit(1);
+
+    if (existingAssignment) {
+      return existingAssignment;
     }
 
     const [created] = await db
@@ -269,7 +438,7 @@ export const institutionService = {
         branchId: input.branchId ?? school.branchId,
         schoolId: school.id,
         classId: input.classId,
-        subjectId: input.isAllClassSubjects ? null : input.subjectId ?? null,
+        subjectId: normalizedSubjectId,
         sessionId: input.sessionId,
         isAllClassSubjects: Boolean(input.isAllClassSubjects),
       })
@@ -291,6 +460,44 @@ export const institutionService = {
     });
 
     return created;
+  },
+
+  async deleteTeacherAssignment(
+    actor: AuthenticatedUser,
+    assignmentId: string,
+    req?: Request
+  ) {
+    const [existing] = await db
+      .select()
+      .from(teacherAssignments)
+      .where(eq(teacherAssignments.id, assignmentId))
+      .limit(1);
+
+    if (!existing) {
+      throw new NotFoundException("Teacher assignment not found.");
+    }
+
+    const school = await scopeService.assertSchoolAccess(actor, existing.schoolId);
+
+    await db
+      .delete(teacherAssignments)
+      .where(eq(teacherAssignments.id, assignmentId));
+
+    await auditService.log({
+      action: "academics.teacher_assignment.delete",
+      entityType: "teacher_assignment",
+      entityId: assignmentId,
+      branchId: school.branchId,
+      schoolId: school.id,
+      metadata: {
+        staffProfileId: existing.staffProfileId,
+        classId: existing.classId,
+        subjectId: existing.subjectId,
+      },
+      req,
+    });
+
+    return { id: assignmentId, deleted: true };
   },
 
   async listClassStudents(

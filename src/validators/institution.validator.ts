@@ -42,6 +42,16 @@ export const createClassSchema = z.object({
   description: z.string().trim().max(500).optional(),
 });
 
+export const updateClassSchema = z.object({
+  name: z.string().trim().min(2).max(100).optional(),
+  code: z.string().trim().min(2).max(32).optional(),
+  gradeLevel: z.string().trim().min(2).max(64).optional(),
+  department: z.string().trim().max(64).nullable().optional(),
+  room: z.string().trim().max(64).nullable().optional(),
+  formMasterId: z.string().min(1).nullable().optional(),
+  description: z.string().trim().max(500).nullable().optional(),
+});
+
 export const createSubjectSchema = z.object({
   schoolId: z.string().uuid().optional(),
   schoolLevel: z.enum(["primary", "secondary"]),

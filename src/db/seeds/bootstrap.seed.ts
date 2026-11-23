@@ -14,13 +14,12 @@ import {
   user,
 } from "../schema";
 import { logger } from "../../utils/logger";
-
-const INSTITUTION_BRANCHES = [
-  { name: "Wuse", code: "WUS", address: "Wuse II Campus, Abuja" },
-  { name: "Guzape", code: "GUZ", address: "Guzape Campus, Abuja" },
-  { name: "Gwarinpa", code: "GWA", address: "Gwarinpa Campus, Abuja" },
-  { name: "Wuye", code: "WUY", address: "Wuye Campus, Abuja" },
-] as const;
+import {
+  isCanonicalSchoolForBranch,
+  PREASSIGNED_BRANCHES,
+  PREASSIGNED_SCHOOLS,
+} from "../../config/preassigned-classes.config";
+import { preassignedClassesService } from "../../services/preassigned-classes.service";
 
 const DEFAULT_ASSESSMENTS = [
   { assessmentType: "CA1" as const, label: "1st Continuous Assessment", defaultMaxScore: 10, weightPercentage: 10 },
@@ -33,47 +32,104 @@ const DEFAULT_ASSESSMENTS = [
 const bootstrap = async () => {
   logger.info("Running Examinify production bootstrap seed...");
 
-  // 1. Branches & Primary/Secondary Schools
-  for (const b of INSTITUTION_BRANCHES) {
+  // 1. Branches (Guzape, Gwarinpa, Wuse, Wuye)
+  const branchByCode = new Map<string, { id: string; code: string; name: string }>();
+  for (const b of PREASSIGNED_BRANCHES) {
     let [branch] = await db.select().from(branches).where(eq(branches.code, b.code)).limit(1);
     if (!branch) {
       [branch] = await db.insert(branches).values(b).returning();
     }
+    branchByCode.set(b.code, branch);
+  }
 
-    for (const level of ["primary", "secondary"] as const) {
-      const [existingSchool] = await db
-        .select()
-        .from(schools)
-        .where(and(eq(schools.branchId, branch.id), eq(schools.level, level)))
-        .limit(1);
+  // 2. Canonical Schools (3 Primary Academies + 3 Secondary Colleges)
+  const seededSchools: Array<{ id: string; name: string; level: "primary" | "secondary" }> = [];
+  for (const spec of PREASSIGNED_SCHOOLS) {
+    const branch = branchByCode.get(spec.branchCode);
+    if (!branch) continue;
 
-      if (!existingSchool) {
-        const label = level === "primary" ? "Primary School" : "Secondary School";
-        const [createdSchool] = await db
-          .insert(schools)
-          .values({
-            branchId: branch.id,
-            level,
-            name: `Examinify ${label} — ${branch.name}`,
-          })
-          .returning();
+    const [existingSchool] = await db
+      .select()
+      .from(schools)
+      .where(and(eq(schools.branchId, branch.id), eq(schools.level, spec.level)))
+      .limit(1);
 
-        for (const cfg of DEFAULT_ASSESSMENTS) {
-          await db
-            .insert(schoolAssessmentConfigs)
-            .values({ schoolId: createdSchool.id, ...cfg })
-            .onConflictDoNothing();
-        }
-      }
+    let schoolRecord = existingSchool;
+    if (!schoolRecord) {
+      [schoolRecord] = await db
+        .insert(schools)
+        .values({
+          branchId: branch.id,
+          level: spec.level,
+          name: spec.name,
+          isActive: true,
+        })
+        .returning();
+    } else if (
+      schoolRecord.name !== spec.name ||
+      !schoolRecord.isActive ||
+      schoolRecord.deletedAt
+    ) {
+      [schoolRecord] = await db
+        .update(schools)
+        .set({
+          name: spec.name,
+          isActive: true,
+          deletedAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(schools.id, schoolRecord.id))
+        .returning();
+    }
+
+    for (const cfg of DEFAULT_ASSESSMENTS) {
+      await db
+        .insert(schoolAssessmentConfigs)
+        .values({ schoolId: schoolRecord.id, ...cfg })
+        .onConflictDoNothing();
+    }
+
+    seededSchools.push({
+      id: schoolRecord.id,
+      name: schoolRecord.name,
+      level: schoolRecord.level,
+    });
+  }
+
+  // Safely deactivate any legacy non-canonical (branch, level) schools (e.g. Wuse Secondary / Wuye Primary)
+  const allBranchSchools = await db
+    .select({
+      id: schools.id,
+      level: schools.level,
+      isActive: schools.isActive,
+      branchCode: branches.code,
+    })
+    .from(schools)
+    .innerJoin(branches, eq(schools.branchId, branches.id));
+
+  for (const s of allBranchSchools) {
+    if (s.isActive && !isCanonicalSchoolForBranch(s.branchCode, s.level)) {
+      await db
+        .update(schools)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(eq(schools.id, s.id));
     }
   }
 
-  // 2. Academic Session & Terms
+  // 3. Academic Session & Terms
   let [session] = await db
     .select()
     .from(academicSessions)
-    .where(eq(academicSessions.label, "2025/2026"))
+    .where(eq(academicSessions.isActive, true))
     .limit(1);
+
+  if (!session) {
+    [session] = await db
+      .select()
+      .from(academicSessions)
+      .where(eq(academicSessions.label, "2025/2026"))
+      .limit(1);
+  }
 
   if (!session) {
     [session] = await db
@@ -93,6 +149,20 @@ const bootstrap = async () => {
       .insert(terms)
       .values({ sessionId: session.id, ...t })
       .onConflictDoNothing();
+  }
+
+  // 4. Preassigned Classes per School Level (Primary for Academies, Secondary for Colleges)
+  for (const school of seededSchools) {
+    const inserted = await preassignedClassesService.ensurePreassignedClassesForSchool(
+      school.id,
+      school.level,
+      session.id
+    );
+    logger.info("Preassigned classes ensured for school", {
+      school: school.name,
+      level: school.level,
+      inserted,
+    });
   }
 
   // 3. Single Super Admin Account

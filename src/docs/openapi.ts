@@ -112,6 +112,20 @@ export const getOpenApiSpec = (serverUrl?: string) => {
           responses: { "200": { description: "Directory list" } },
         },
       },
+      "/api/v1/users/{userId}/status": {
+        patch: {
+          tags: ["Users & Provisioning"],
+          summary: "Update scoped user account status (active, pending, suspended)",
+          responses: { "200": { description: "Updated user status" } },
+        },
+      },
+      "/api/v1/users/{userId}/role": {
+        patch: {
+          tags: ["Users & Provisioning"],
+          summary: "Reassign scoped staff user role (school_admin, examiner, teacher, non_academic_staff)",
+          responses: { "200": { description: "Updated staff role" } },
+        },
+      },
       "/api/v1/institution/branches": {
         get: { tags: ["Institution & Academics"], summary: "List campus branches", responses: { "200": { description: "OK" } } },
         post: { tags: ["Institution & Academics"], summary: "Create branch (Super Admin)", responses: { "201": { description: "Created" } } },
@@ -124,12 +138,18 @@ export const getOpenApiSpec = (serverUrl?: string) => {
         get: { tags: ["Institution & Academics"], summary: "List classes", responses: { "200": { description: "OK" } } },
         post: { tags: ["Institution & Academics"], summary: "Create class", responses: { "201": { description: "Created" } } },
       },
+      "/api/v1/institution/classes/{classId}": {
+        patch: { tags: ["Institution & Academics"], summary: "Update class arm details or assign/unassign form master", responses: { "200": { description: "Updated class" } } },
+      },
       "/api/v1/institution/classes/{classId}/students": {
         get: { tags: ["Institution & Academics"], summary: "List actively enrolled students in a class", responses: { "200": { description: "Class student roster" } } },
       },
       "/api/v1/institution/teacher-assignments": {
         get: { tags: ["Institution & Academics"], summary: "List scoped teacher class/subject assignments", responses: { "200": { description: "OK" } } },
         post: { tags: ["Institution & Academics"], summary: "Assign teacher to class/subject", responses: { "201": { description: "Created" } } },
+      },
+      "/api/v1/institution/teacher-assignments/{assignmentId}": {
+        delete: { tags: ["Institution & Academics"], summary: "Remove a teacher class/subject assignment", responses: { "200": { description: "Deleted" } } },
       },
       "/api/v1/institution/attendance": {
         get: { tags: ["Institution & Academics"], summary: "List attendance records", responses: { "200": { description: "OK" } } },

@@ -7,6 +7,7 @@ import {
   createBranchMemberSchema,
   createSchoolAdminSchema,
   importCsvMembersSchema,
+  updateUserRoleSchema,
   updateUserStatusSchema,
 } from "../validators/user.validator";
 
@@ -50,6 +51,18 @@ export const userController = {
       req.auth!.user,
       String(req.params.userId),
       payload.status,
+      payload.reason,
+      req
+    );
+    res.status(HttpStatus.OK).json({ success: true, data });
+  },
+
+  async updateRole(req: Request, res: Response) {
+    const payload = updateUserRoleSchema.parse(req.body);
+    const data = await userService.updateUserRole(
+      req.auth!.user,
+      String(req.params.userId),
+      payload.role,
       payload.reason,
       req
     );

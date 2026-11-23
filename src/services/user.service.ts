@@ -27,7 +27,9 @@ import {
 } from "../utils/app-error";
 import { auditService } from "./audit.service";
 import { emailService } from "./email.service";
+import { preassignedClassesService } from "./preassigned-classes.service";
 import { scopeService } from "./scope.service";
+import { isGradeAllowedForSchoolLevel } from "../config/preassigned-classes.config";
 import {
   CreateBranchMemberInput,
   CreateSchoolAdminInput,
@@ -110,6 +112,7 @@ export const userService = {
         and(
           eq(schools.id, input.schoolId),
           eq(schools.branchId, input.branchId),
+          eq(schools.isActive, true),
           isNull(schools.deletedAt)
         )
       )
@@ -186,6 +189,11 @@ export const userService = {
       return { user: newUser, staffProfile: profile };
     });
 
+    await preassignedClassesService.ensurePreassignedClassesForSchoolActiveSession(
+      school.id,
+      school.level
+    );
+
     await auditService.log({
       action: "user.create.school_admin",
       entityType: "user",
@@ -245,6 +253,20 @@ export const userService = {
 
     if (!school) {
       throw new BadRequestException("Target school does not belong to the specified branch.");
+    }
+
+    if (
+      input.role === "student" &&
+      input.gradeLevel &&
+      !isGradeAllowedForSchoolLevel(input.gradeLevel, school.level)
+    ) {
+      const expected =
+        school.level === "primary"
+          ? "Primary / Early Years (Playgroup – Grade 6)"
+          : "Secondary (JSS 1 – SS 3)";
+      throw new BadRequestException(
+        `${school.name} is a ${school.level} school and only supports ${expected} grade levels.`
+      );
     }
 
     const normalizedUsername = input.username.trim().toLowerCase();
@@ -492,16 +514,118 @@ export const userService = {
         name: user.name,
         username: user.username,
         email: user.email,
+        image: user.image,
         role: user.role,
         status: user.status,
         primaryBranchId: user.primaryBranchId,
         primarySchoolId: user.primarySchoolId,
         createdAt: user.createdAt,
+        staffProfileId: staffProfiles.id,
+        staffId: staffProfiles.staffId,
+        staffCategory: staffProfiles.staffCategory,
+        title: staffProfiles.title,
+        department: staffProfiles.department,
+        phone: staffProfiles.phone,
+        studentProfileId: studentProfiles.id,
+        registrationNumber: studentProfiles.registrationNumber,
       })
       .from(user)
+      .leftJoin(staffProfiles, eq(staffProfiles.userId, user.id))
+      .leftJoin(studentProfiles, eq(studentProfiles.userId, user.id))
       .where(and(...conditions))
       .orderBy(desc(user.createdAt))
       .limit(200);
+  },
+
+  async updateUserRole(
+    actor: AuthenticatedUser,
+    targetUserId: string,
+    nextRole: "school_admin" | "examiner" | "teacher" | "non_academic_staff",
+    reason?: string,
+    req?: Request
+  ) {
+    if (actor.id === targetUserId) {
+      throw new ForbiddenException("You cannot modify your own account role.");
+    }
+
+    const [target] = await db
+      .select()
+      .from(user)
+      .where(and(eq(user.id, targetUserId), isNull(user.deletedAt)))
+      .limit(1);
+
+    if (!target) {
+      throw new NotFoundException("User not found.");
+    }
+
+    if (target.role === "super_admin") {
+      throw new ForbiddenException("Super Admin role cannot be modified here.");
+    }
+
+    if (target.role === "student") {
+      throw new BadRequestException("Student accounts cannot be reassigned to staff roles.");
+    }
+
+    if (
+      (nextRole === "school_admin" || target.role === "school_admin") &&
+      actor.role !== "super_admin"
+    ) {
+      throw new ForbiddenException(
+        "Only a Super Admin can assign or change the School Admin role."
+      );
+    }
+
+    scopeService.assertBranchSchoolScope(actor, {
+      branchId: target.primaryBranchId,
+      schoolId: target.primarySchoolId,
+    });
+
+    const nextCategory = mapRoleToStaffCategory(nextRole);
+
+    const updated = await db.transaction(async (tx) => {
+      const [row] = await tx
+        .update(user)
+        .set({
+          role: nextRole,
+          updatedAt: new Date(),
+        })
+        .where(eq(user.id, targetUserId))
+        .returning({
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          email: user.email,
+          role: user.role,
+          status: user.status,
+        });
+
+      await tx
+        .update(staffProfiles)
+        .set({
+          staffCategory: nextCategory,
+          updatedAt: new Date(),
+        })
+        .where(eq(staffProfiles.userId, targetUserId));
+
+      return row;
+    });
+
+    await auditService.log({
+      action: "user.role.update",
+      entityType: "user",
+      entityId: targetUserId,
+      branchId: target.primaryBranchId,
+      schoolId: target.primarySchoolId,
+      metadata: {
+        previousRole: target.role,
+        nextRole,
+        staffCategory: nextCategory,
+        reason,
+      },
+      req,
+    });
+
+    return { ...updated, staffCategory: nextCategory };
   },
 
   async updateUserStatus(

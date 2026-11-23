@@ -60,3 +60,11 @@ usersRoutes.patch(
   requirePermission(PERMISSIONS.USER_MANAGE_BRANCH),
   asyncHandler(userController.updateStatus)
 );
+
+usersRoutes.patch(
+  "/:userId/role",
+  requireAuth,
+  requireMfaForAdmins,
+  requirePermission(PERMISSIONS.USER_MANAGE_BRANCH),
+  asyncHandler(userController.updateRole)
+);

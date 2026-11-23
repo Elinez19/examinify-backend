@@ -44,8 +44,11 @@ describe("API Security Boundaries, MFA Gate & Branch/School ABAC", () => {
   it("returns 401 Unauthorized for unauthenticated calls to protected /api/v1 endpoints", async () => {
     const endpoints: Array<{ method: "get" | "post" | "patch" | "delete"; path: string }> = [
       { method: "get", path: "/api/v1/users/me" },
+      { method: "patch", path: "/api/v1/users/00000000-0000-0000-0000-000000000000/role" },
       { method: "get", path: "/api/v1/institution/classes/00000000-0000-0000-0000-000000000000/students" },
+      { method: "patch", path: "/api/v1/institution/classes/00000000-0000-0000-0000-000000000000" },
       { method: "get", path: "/api/v1/institution/teacher-assignments" },
+      { method: "delete", path: "/api/v1/institution/teacher-assignments/00000000-0000-0000-0000-000000000000" },
       { method: "get", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000/attempts" },
       { method: "patch", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000" },
       { method: "delete", path: "/api/v1/exams/00000000-0000-0000-0000-000000000000" },
